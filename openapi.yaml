@@ -1,0 +1,419 @@
+openapi: 3.1.0
+info:
+  title: Classified API
+  version: 1.0.0
+  description: |
+    HTTP-контракт для архитектуры Classified (аналог Avito) из схемы пользователя.
+tags:
+  - name: Search
+    description: Публичная выдача и текстовый поиск
+  - name: Products
+    description: Чтение карточек и публикация объявлений
+  - name: Feed
+    description: Персонализированная лента (JWT)
+  - name: Listings
+    description: Личные объявления (JWT)
+  - name: Media
+    description: Выдача pre-signed URL для прямой загрузки в S3 (JWT)
+paths:
+  /api/v1/products:
+    get:
+      tags: [Search]
+      operationId: searchProducts
+      summary: Главная и публичный поиск объявлений
+      description: |
+        Выполняется Search Service через Elasticsearch. Если `q` не указан,
+        может возвращаться неперсонализированная главная выдача.
+        Сервер фильтрует недействующие объявления и записи с `expiresAt <= now`.
+        Endpoint доступен как гостю, так и авторизованному пользователю.
+      security: []
+      parameters:
+        - name: q
+          in: query
+          description: Полнотекстовый запрос (название и описание)
+          schema: {type: string, minLength: 1}
+          example: mazda
+        - name: category
+          in: query
+          schema: {type: string}
+          example: auto
+        - name: color
+          in: query
+          schema: {type: string}
+          example: red
+        - name: city
+          in: query
+          schema: {type: string}
+          example: warsaw
+        - name: limit
+          in: query
+          description: Размер страницы (необязательное расширение базового API)
+          schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+      responses:
+        '200':
+          description: Результаты поиска; структура hits сохранена из эскиза
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SearchResponse'}
+              example:
+                took: 5
+                hits:
+                  total: {value: 1}
+                  hits:
+                    - _id: '77213'
+                      _source:
+                        id: '77213'
+                        title: Mazda 6 2020
+                        description: Продаю автомобиль в хорошем состоянии
+                        price: 85000
+                        currency: PLN
+                        category: {slug: auto}
+                        attributes: {color: red}
+                        location: {city: warsaw}
+                        status: active
+                        publishedAt: '2026-10-14T08:00:00Z'
+                        expiresAt: '2026-11-13T08:00:00Z'
+                        photoUrls: ['https://cdn.classified.example/listings/77213/cover.jpg']
+
+  /api/v1/product/{id}:
+    get:
+      tags: [Products]
+      operationId: getProduct
+      summary: Посмотреть карточку объявления
+      description: |
+        Product Service читает карточку из PostgreSQL (возможно через кэш).
+        Фотографии загружаются браузером / приложением через CDN, а не через API.
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Идентификатор объявления
+          schema: {type: string}
+          example: '77213'
+      responses:
+        '200':
+          description: Карточка объявления
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Product'}
+        '404':
+          description: Объявление отсутствует или недоступно
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+
+  /api/v1/feed:
+    get:
+      tags: [Feed]
+      operationId: getFeed
+      summary: Получить персонализированную ленту
+      description: |
+        JWT используется для определения `user_id`.
+        Feed Service получает ранжированные ID объявлений из Redis и
+        обогащает/проверяет их через Elasticsearch перед выдачей.
+        Предрасчёт рекомендаций FeedWorker выполняет асинхронно.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+      responses:
+        '200':
+          description: Персонализированная лента
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FeedResponse'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/listings:
+    get:
+      tags: [Listings]
+      operationId: getMyListings
+      summary: Посмотреть свои объявления
+      description: |
+        Список выбирается по `owner_id` из JWT, а не из query-параметра.
+        Источник истины — PostgreSQL (Product Service).
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+      responses:
+        '200':
+          description: Мои объявления
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MyListingsResponse'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/product:
+    post:
+      tags: [Products]
+      operationId: createProduct
+      summary: Создать объявление
+      description: |
+        Product Service сохраняет объявление и ссылки на загруженные файлы
+        в PostgreSQL. `owner_id` берётся из JWT. Если `imageKeys` указаны,
+        каждый ключ должен принадлежать пользователю и существовать в S3.
+        Данные появятся в поиске асинхронно через Debezium → Kafka → ES Connector.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateProductRequest'}
+            example:
+              title: Продам ВАЗ 2114
+              description: Новая!
+              price: 540000
+              currency: PLN
+              city: Warsaw
+              category: auto
+              extraFields:
+                mileage: 25000
+                color: red
+              imageKeys:
+                - pending/user-123/550e8400-e29b-41d4-a716-446655440000.jpg
+      responses:
+        '201':
+          description: Объявление успешно сохранено в PostgreSQL
+          headers:
+            Location:
+              description: URL созданного объявления
+              schema: {type: string, example: '/api/v1/product/77214'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProductCreatedResponse'}
+              example:
+                id: '77214'
+                status: active
+                publishedAt: '2026-10-14T08:00:00Z'
+                expiresAt: '2026-11-13T08:00:00Z'
+        '400':
+          description: Невалидные поля / некорректный ключ фотографии
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/products/upload-url:
+    get:
+      tags: [Media]
+      operationId: getPresignedUploadUrl
+      summary: Получить pre-signed URL для загрузки фотографии
+      description: |
+        Маршрут и метод GET сохранены как в исходном наброске.
+        Сервер подписывает временный S3 PUT URL и возвращает `fileKey`.
+        Клиент выполняет **PUT напрямую по uploadUrl** с тем же Content-Type;
+        бинарные данные не проходят через API Gateway.
+        В расширенной версии API такой запрос можно сделать POST.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: filename
+          in: query
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 255}
+          example: tshirt-red.jpg
+        - name: contentType
+          in: query
+          required: true
+          schema: {type: string, enum: [image/jpeg, image/png, image/webp]}
+          example: image/jpeg
+      responses:
+        '200':
+          description: Данные для прямой загрузки файла
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PresignedUploadResponse'}
+              example:
+                uploadUrl: 'https://bucket.s3.example/pending/user-123/uuid.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=...'
+                fileKey: pending/user-123/uuid.jpg
+                fileUrl: https://cdn.classified.example/pending/user-123/uuid.jpg
+                expiresInSeconds: 300
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT от Auth & IAM. Используется claim `sub` как owner/user id.
+  responses:
+    Unauthorized:
+      description: Нет или недействителен Bearer JWT
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+          example: {code: unauthorized, message: Authentication required}
+  schemas:
+    Error:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code: {type: string}
+        message: {type: string}
+
+    Category:
+      type: object
+      required: [slug]
+      properties:
+        slug: {type: string, example: auto}
+
+    Location:
+      type: object
+      required: [city]
+      properties:
+        city: {type: string, example: warsaw}
+
+    Product:
+      type: object
+      description: Денормализованное представление объявления для чтения
+      required: [id, title, price, currency, category, attributes, location, status, publishedAt, expiresAt, photoUrls]
+      properties:
+        id: {type: string, example: '77213'}
+        title: {type: string, example: Mazda 6 2020}
+        description: {type: string, example: Автомобиль в хорошем состоянии}
+        price: {type: integer, minimum: 0, example: 85000}
+        currency: {type: string, example: PLN}
+        category: {$ref: '#/components/schemas/Category'}
+        attributes:
+          type: object
+          description: Категориальные поля, например color/mileage
+          additionalProperties: true
+          example: {color: red, mileage: 25000}
+        location: {$ref: '#/components/schemas/Location'}
+        status:
+          type: string
+          enum: [active, sold, expired, deleted]
+          example: active
+        publishedAt: {type: string, format: date-time}
+        expiresAt: {type: string, format: date-time}
+        photoUrls:
+          type: array
+          items: {type: string, format: uri}
+
+    SearchHit:
+      type: object
+      required: [_id, _source]
+      properties:
+        _id: {type: string, example: '77213'}
+        _source: {$ref: '#/components/schemas/Product'}
+
+    SearchResponse:
+      type: object
+      description: Совместимый с эскизом ES-подобный публичный формат ответа
+      required: [took, hits]
+      properties:
+        took: {type: integer, minimum: 0, description: Время выполнения запроса (мс)}
+        hits:
+          type: object
+          required: [total, hits]
+          properties:
+            total:
+              type: object
+              required: [value]
+              properties:
+                value: {type: integer, minimum: 0}
+            hits:
+              type: array
+              items: {$ref: '#/components/schemas/SearchHit'}
+
+    FeedItem:
+      type: object
+      required: [listing, score]
+      properties:
+        listing: {$ref: '#/components/schemas/Product'}
+        score: {type: number, example: 0.98}
+
+    FeedResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/FeedItem'}
+        generatedAt:
+          type: string
+          format: date-time
+          description: Время построения рекомендаций, если доступно
+
+    MyListing:
+      type: object
+      required: [id, title, price, currency, status]
+      properties:
+        id: {type: string, example: '77213'}
+        title: {type: string, example: Продам ВАЗ 2114}
+        price: {type: integer, minimum: 0, example: 540000}
+        currency: {type: string, example: PLN}
+        status: {type: string, enum: [active, sold, expired, deleted]}
+        coverUrl: {type: string, format: uri}
+        publishedAt: {type: string, format: date-time}
+        expiresAt: {type: string, format: date-time}
+
+    MyListingsResponse:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/MyListing'}
+        total: {type: integer, minimum: 0}
+
+    CreateProductRequest:
+      type: object
+      additionalProperties: false
+      required: [title, description, price, city]
+      properties:
+        title: {type: string, minLength: 1, maxLength: 200}
+        description: {type: string, minLength: 1, maxLength: 20000}
+        price: {type: integer, minimum: 0, description: Цена в целых PLN (дробная часть в исходном контракте не предусмотрена)}
+        currency: {type: string, default: PLN, example: PLN}
+        city: {type: string, minLength: 1, example: Warsaw}
+        category: {type: string, example: auto}
+        extraFields:
+          type: object
+          description: Поля, зависящие от категории объявления
+          additionalProperties: true
+          example: {mileage: 25000, color: red}
+        imageKeys:
+          type: array
+          description: Ключи объектов, ранее загруженных по pre-signed URL
+          maxItems: 7
+          items: {type: string}
+
+    ProductCreatedResponse:
+      type: object
+      required: [id, status, publishedAt, expiresAt]
+      properties:
+        id: {type: string, example: '77214'}
+        status: {type: string, enum: [active], example: active}
+        publishedAt: {type: string, format: date-time}
+        expiresAt: {type: string, format: date-time}
+
+    PresignedUploadResponse:
+      type: object
+      required: [uploadUrl, fileKey, fileUrl, expiresInSeconds]
+      properties:
+        uploadUrl:
+          type: string
+          format: uri
+          description: Временный PUT URL в S3 (не API Gateway)
+        fileKey:
+          type: string
+          description: Ключ в S3, который передаётся в imageKeys при создании объявления
+        fileUrl:
+          type: string
+          format: uri
+          description: Будущий URL чтения через CDN, после публикации объекта
+        expiresInSeconds: {type: integer, minimum: 1, example: 300}

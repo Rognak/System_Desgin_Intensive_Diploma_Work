@@ -1,0 +1,18 @@
+sequenceDiagram
+    autonumber
+    actor u as Пользователь
+    participant c as Web / Mobile
+    participant g as API Gateway
+    participant a as Auth / IAM
+    participant p as Product Service
+    participant db as PostgreSQL
+    u->>c: Заполняет карточку, фото уже в S3
+    c->>g: POST /api/v1/product + JWT + imageKeys
+    g->>a: Проверить JWT и получить user_id
+    a-->>g: user_id
+    g->>p: Создать объявление от user_id
+    p->>db: BEGIN INSERT listing and photo keys COMMIT
+    db-->>p: id, publishedAt, expiresAt, status=active
+    p-->>g: ListingCreatedResponse
+    g-->>c: HTTP 201 Location: /api/v1/product/{id}
+    c-->>u: Объявление сохранено

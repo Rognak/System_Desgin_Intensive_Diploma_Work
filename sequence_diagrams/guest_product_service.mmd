@@ -1,0 +1,21 @@
+sequenceDiagram
+    autonumber
+    actor u as Пользователь
+    participant c as Web / Mobile
+    participant g as API Gateway
+    participant p as Product Service
+    participant db as PostgreSQL
+    participant cdn as CDN
+    participant s3 as S3
+    u->>c: Открывает объявление 77213
+    c->>g: GET /api/v1/product/77213
+    g->>p: Получить публичную карточку
+    p->>db: SELECT по id + проверка статуса/TTL
+    db-->>p: Данные объявления + URL фотографий
+    p-->>g: ProductResponse
+    g-->>c: HTTP 200 JSON
+    c->>cdn: GET https://cdn.../photo.jpg
+    cdn->>s3: GET object (если нет в edge cache)
+    s3-->>cdn: Бинарное изображение
+    cdn-->>c: Изображение
+    c-->>u: Карточка с фотографиями

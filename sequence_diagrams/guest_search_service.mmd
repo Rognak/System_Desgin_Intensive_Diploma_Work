@@ -1,0 +1,15 @@
+sequenceDiagram
+    autonumber
+    actor u as Пользователь
+    participant c as Web / Mobile
+    participant g as API Gateway
+    participant s as Search Service
+    participant e as Elasticsearch
+    u->>c: Открывает главную / вводит запрос
+    c->>g: GET /api/v1/products?category=auto&color=red&city=warsaw
+    g->>s: Публичный поиск / выдача
+    s->>e: Поиск + status=active + expiresAt>now
+    e-->>s: Найденные документы и total
+    s-->>g: SearchResponse (took, hits)
+    g-->>c: HTTP 200 JSON
+    c-->>u: Отображает карточки списка

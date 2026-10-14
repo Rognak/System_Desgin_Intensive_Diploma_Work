@@ -1,0 +1,18 @@
+sequenceDiagram
+    autonumber
+    participant sch as Scheduler
+    participant w as FeedWorker
+    participant ch as ClickHouse
+    participant e as Elasticsearch
+    participant r as Redis
+    participant f as Feed Service
+    sch-->>w: Запустить batch для active_user_ids
+    w->>ch: SELECT признаки/история активных пользователей
+    ch-->>w: User features и тренды
+    w->>e: Список актуальных кандидатов/атрибутов
+    e-->>w: Candidate listing_ids
+    w->>w: ML ranking / top-N / TTL
+    w->>r: SET/ZADD feed:user:{id} + expiry
+    r-->>w: OK
+    f->>r: Чтение ленты при будущем HTTP запросе
+    r-->>f: Предрасчитанные listing_ids

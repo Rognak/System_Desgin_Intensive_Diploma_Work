@@ -1,0 +1,21 @@
+sequenceDiagram
+    autonumber
+    actor u as Пользователь
+    participant c as Web / Mobile
+    participant g as API Gateway
+    participant a as Auth / IAM
+    participant f as Feed Service
+    participant r as Redis
+    participant e as Elasticsearch
+    u->>c: Открывает «Для вас»
+    c->>g: GET /api/v1/feed + Bearer JWT
+    g->>a: Проверка JWT и user_id
+    a-->>g: user_id / scope
+    g->>f: Получить feed(user_id)
+    f->>r: GET feed:user:{user_id}
+    r-->>f: Ранжированный список listing_id
+    f->>e: Получить документы по id, active and expiresAt>now
+    e-->>f: Актуальные объявления
+    f-->>g: FeedResponse, порядок по score
+    g-->>c: HTTP 200 JSON
+    c-->>u: Персональная лента

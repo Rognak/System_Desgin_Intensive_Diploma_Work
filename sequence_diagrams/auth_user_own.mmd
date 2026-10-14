@@ -1,0 +1,18 @@
+sequenceDiagram
+    autonumber
+    actor u as Пользователь
+    participant c as Web / Mobile
+    participant g as API Gateway
+    participant a as Auth / IAM
+    participant p as Product Service
+    participant db as PostgreSQL
+    u->>c: Открывает «Мои объявления»
+    c->>g: GET /api/v1/listings + Bearer JWT
+    g->>a: Проверить JWT, извлечь sub
+    a-->>g: user_id
+    g->>p: Список по owner_id=user_id
+    p->>db: SELECT ... WHERE owner_id=?
+    db-->>p: Мои объявления, статусы
+    p-->>g: MyListingsResponse
+    g-->>c: HTTP 200 JSON
+    c-->>u: Список опубликованных объявлений

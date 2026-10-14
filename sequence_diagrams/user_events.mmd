@@ -1,0 +1,16 @@
+sequenceDiagram
+    autonumber
+    actor u as Клиент
+    participant g as API Gateway
+    participant v as UserEvents Service
+    participant k as Kafka (events)
+    participant ch as ClickHouse
+    participant db as PostgreSQL WAL
+    participant d as Debezium
+    u-->>g: Событие просмотра / клика
+    g-->>v: Передать пользовательское событие
+    v-->>k: Produce user_events
+    k-->>ch: Ingest user_events (consumer/connector)
+    db-->>d: Событие изменения бизнес-данных из WAL
+    d-->>k: Produce business_changes (отдельный topic)
+    k-->>ch: Ingest business_changes (consumer/connector)
